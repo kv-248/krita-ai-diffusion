@@ -1623,7 +1623,8 @@ def _save_job_result(model: DocumentModel, job: Job | None, index: int):
     assert job is not None, "Cannot save result, invalid job id"
     assert len(job.results) > index, "Cannot save result, invalid result index"
     assert model.document.filename, "Cannot save result, document is not saved"
-    timestamp = job.timestamp.astimezone().strftime("%Y%m%d-%H%M%S")
+    when = job.timestamp or datetime.now().astimezone()
+    timestamp = when.astimezone().strftime("%Y%m%d-%H%M%S")
     cur_timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     prompt = util.sanitize_prompt(job.params.name)
     path = Path(model.document.filename)

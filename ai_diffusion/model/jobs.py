@@ -124,7 +124,7 @@ class Job:
     state = JobState.queued
     params: JobParams
     control: control.ControlLayer | None = None
-    timestamp: datetime
+    timestamp: datetime | None
     results: ImageCollection
     in_use: dict[int, bool]
 

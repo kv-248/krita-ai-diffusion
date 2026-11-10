@@ -3,11 +3,14 @@ document annotations and the plugin's settings.json file."""
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from krita import Document as MockKritaDocument
 from krita import Krita
+from PyQt6.QtCore import QByteArray
 
 from ai_diffusion.backend.api import FillMode, InpaintMode
 from ai_diffusion.document import KritaDocument
@@ -189,7 +192,9 @@ async def test_history(workflows_dir: Path):
     # Build a finished diffusion job with two result images
     bounds = Bounds(0, 0, 512, 512)
     params = JobParams(bounds=bounds, name="history test", seed=99)
+    created = datetime(2024, 5, 6, 7, 8, 9, tzinfo=timezone.utc)
     job1 = model1.jobs.add_job(Job("history-job-1", JobKind.diffusion, params))
+    job1.timestamp = created
 
     img_a = Image.create(Extent(512, 512), fill=0xFFFF0000)  # red
     img_b = Image.create(Extent(512, 512), fill=0xFF0000FF)  # blue
@@ -218,6 +223,7 @@ async def test_history(workflows_dir: Path):
     assert restored_job.state is JobState.finished
     assert restored_job.params.name == "history test"
     assert restored_job.params.seed == 99
+    assert restored_job.timestamp == created
     assert len(restored_job.results) == 2
 
     # Check image content is intact
@@ -228,3 +234,40 @@ async def test_history(workflows_dir: Path):
     # Pixel values should be close to the originals (allow for WebP compression rounding)
     assert Image.compare(restored_a, img_a) < 0.02
     assert Image.compare(restored_b, img_b) < 0.02
+
+
+@qtapp
+async def test_history_without_timestamp_is_unknown(workflows_dir: Path):
+    """Documents saved before timestamps were stored must not present the reopen time as the
+    original generation time."""
+
+    krita_doc = Krita.instance().openDocument("test")
+    model1 = _make_model(krita_doc, workflows_dir)
+    sync1 = ModelSync(model1)
+
+    bounds = Bounds(0, 0, 64, 64)
+    params = JobParams(bounds=bounds, name="legacy history", seed=1)
+    job1 = model1.jobs.add_job(Job("legacy-job", JobKind.diffusion, params))
+    job1.timestamp = datetime(2020, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    model1.jobs.set_results(job1, ImageCollection([Image.create(Extent(64, 64), fill=0xFF00FF00)]))
+    model1.jobs.notify_finished(job1)
+    if sync1._image_task is not None:
+        await sync1._image_task
+    sync1._save()
+
+    state_bytes = model1.document.find_annotation("ui.json")
+    assert state_bytes is not None
+    state = json.loads(bytes(state_bytes.data()))
+    assert state["history"][0]["id"] == "legacy-job"
+    state["history"][0].pop("timestamp", None)
+    model1.document.annotate("ui.json", QByteArray(json.dumps(state).encode("utf-8")))
+
+    Krita.instance().setActiveDocument(krita_doc)
+    doc2 = KritaDocument(krita_doc, None)
+    conn2 = Connection()
+    model2 = DocumentModel(doc2, conn2, WorkflowCollection(conn2, folder=workflows_dir))
+    _sync2 = ModelSync(model2)
+
+    restored_job = model2.jobs.find("legacy-job")
+    assert restored_job is not None
+    assert restored_job.timestamp is None

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from time import time
 from typing import Any
@@ -105,6 +106,7 @@ class _HistoryResult:
     params: JobParams
     kind: JobKind = JobKind.diffusion
     in_use: dict[int, bool] = field(default_factory=dict)
+    timestamp: str = ""  # ISO-8601; empty in documents saved before timestamps were stored
 
     @staticmethod
     def from_dict(data: dict[str, Any]):
@@ -186,6 +188,7 @@ class ModelSync:
             item = _HistoryResult.from_dict(result)
             if images_bytes := _find_annotation(model.document, f"result{item.slot}.webp"):
                 job = model.jobs.add_job(Job(item.id, item.kind, item.params))
+                job.timestamp = _parse_history_timestamp(item.timestamp)
                 job.in_use = item.in_use
                 results = ImageCollection.from_bytes(images_bytes, item.offsets)
                 model.jobs.set_results(job, results)
@@ -252,7 +255,15 @@ class ModelSync:
 
         self._model.document.annotate(f"result{slot}.webp", image_data)
         self._history.append(
-            _HistoryResult(job.id or "", slot, image_offsets, job.params, job.kind, job.in_use)
+            _HistoryResult(
+                job.id or "",
+                slot,
+                image_offsets,
+                job.params,
+                job.kind,
+                job.in_use,
+                _format_history_timestamp(job.timestamp),
+            )
         )
         self._memory_used[slot] = image_data.size()
         self._prune()
@@ -334,6 +345,19 @@ def _deserialize_custom(custom: CustomWorkspace, data: dict[str, Any], document_
         custom.set_graph(workflow_id, graph, document_name)
         if params := data.get("params"):  # old documents, replaced by workflow_params
             custom.workflow_params[workflow_id] = params
+
+
+def _format_history_timestamp(timestamp: datetime | None) -> str:
+    return "" if timestamp is None else timestamp.isoformat()
+
+
+def _parse_history_timestamp(value: str) -> datetime | None:
+    if value == "":
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _find_annotation(document, name: str):
