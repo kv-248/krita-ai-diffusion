@@ -1532,31 +1532,44 @@ _control_instructions = {
 }
 
 
+def inpaint_reference_instruction(arch: Arch, inpaint: InpaintMode | None) -> str:
+    if inpaint is None or not arch.supports_edit:
+        return ""
+    match inpaint, arch:
+        case InpaintMode.fill | InpaintMode.expand, Arch.flux2_4b | Arch.qwen2:
+            return "Fill the green spaces according to the image.\n"
+        case InpaintMode.expand, Arch.flux2_9b:
+            return "Expand the image to fill the empty canvas.\n"
+        case InpaintMode.add_object, _:
+            return "Add the object to the scene.\n"
+        case InpaintMode.remove_object, _:
+            return "Remove the object.\n"
+        case InpaintMode.replace_background, _:
+            return "Replace the background while keeping the main subject.\n"
+        case _:
+            return ""
+
+
 def build_instructions(cond: ConditioningInput, arch: Arch, inpaint: InpaintMode | None):
     instructions = ""
 
-    if not cond.edit_reference and arch.supports_edit:
-        match inpaint, arch:
-            case InpaintMode.fill | InpaintMode.expand, Arch.flux2_4b | Arch.qwen2:
-                instructions += "Fill the green spaces according to the image.\n"
-            case InpaintMode.expand, Arch.flux2_9b:
-                instructions += "Expand the image to fill the empty canvas.\n"
-            case InpaintMode.add_object, _:
-                instructions += "Add the object to the scene.\n"
-            case InpaintMode.remove_object, _:
-                instructions += "Remove the object.\n"
-            case InpaintMode.replace_background, _:
-                instructions += "Replace the background while keeping the main subject.\n"
+    if not cond.edit_reference:
+        instructions += inpaint_reference_instruction(arch, inpaint)
         if instructions != "":
             cond.edit_reference = True
 
-    offset = 2 if cond.edit_reference else 1
-    for i, control in enumerate(cond.control):
+    # Number only images that are actually sent as references. Control-net inputs
+    # such as soft edge stay in the control list but do not occupy an image slot.
+    image_index = 2 if cond.edit_reference else 1
+    for control in cond.control:
         if control.mode.can_substitute_instruction(arch):
             if instruction := _control_instructions.get(control.mode):
-                layer_id = _layer_replace.get(arch, "").format(offset + i)
+                layer_id = _layer_replace.get(arch, "").format(image_index)
                 instructions += instruction.format(layer_id) + "\n"
                 control.mode = ControlMode.reference
+                image_index += 1
+        elif control.mode.is_ip_adapter:
+            image_index += 1
 
     if instructions != "":
         return f"{instructions}\n{cond.positive}"

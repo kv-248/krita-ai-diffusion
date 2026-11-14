@@ -268,11 +268,11 @@ class DocumentModel(QObject, ObservableProperties):
 
         seed = self.seed if self.fixed_seed else workflow.generate_seed()
         ref_layers: dict[str, int] | None = None
+        inpaint_instruction = inpaint_mode if is_one(strength) else None
         if not dryrun:
-            conditioning, ref_layers = self._add_reference_layers(conditioning)
+            conditioning, ref_layers = self._add_reference_layers(conditioning, inpaint_instruction)
 
         original_conditioning = conditioning
-        inpaint_instruction = inpaint_mode if is_one(strength) else None
         conditioning, loras, prompt_meta = workflow.prepare_prompts(
             conditioning, self.style, seed, arch, inpaint_instruction, ref_layers
         )
@@ -940,7 +940,7 @@ class DocumentModel(QObject, ObservableProperties):
             return InpaintMode.fill
         return self.inpaint.mode
 
-    def _add_reference_layers(self, cond: ConditioningInput):
+    def _add_reference_layers(self, cond: ConditioningInput, inpaint: InpaintMode | None = None):
         def add_refs(control: list[ControlInput], layer_names: dict[str, int]):
             layers_sorted = sorted(layer_names.items(), key=lambda x: x[1])
             for layer_name, __ in layers_sorted:
@@ -951,11 +951,17 @@ class DocumentModel(QObject, ObservableProperties):
                 control.append(ctrl.to_api())
 
         cond.edit_reference = self.is_editing
-        layers = extract_layers(cond)
+        # build_instructions attaches the canvas later, when this inpaint mode adds one.
+        reserve_canvas = not cond.edit_reference and bool(
+            workflow.inpaint_reference_instruction(self.arch, inpaint)
+        )
+        layers = extract_layers(cond, arch=self.arch, reserve_canvas=reserve_canvas)
         add_refs(cond.control, layers)
 
         for region in cond.regions:
-            region_layers = extract_layers(cond, region)
+            region_layers = extract_layers(
+                cond, region, arch=self.arch, reserve_canvas=reserve_canvas
+            )
             add_refs(region.control, region_layers)
             layers.update(region_layers)
 

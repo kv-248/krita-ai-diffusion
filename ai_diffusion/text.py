@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .backend.api import ConditioningInput, LoraInput, RegionInput, WorkflowKind
+from .backend.resources import Arch, ControlMode
 from .files import FileCollection, FileSource
 from .localization import translate as _
 from .model.jobs import JobParams
@@ -122,14 +123,26 @@ def _extract_layers(prompt: str, start_index=1):
     return layer_names
 
 
-def extract_layers(cond: ConditioningInput, region: RegionInput | None = None):
-    start_index = 2 if cond.edit_reference else 1
-    start_index += sum(1 if c.mode.is_ip_adapter else 0 for c in cond.control)
+def _occupies_reference_image(mode: ControlMode, arch: Arch | None) -> bool:
+    # Instruction-following models turn these control modes into reference images.
+    return mode.is_ip_adapter or (arch is not None and mode.can_substitute_instruction(arch))
+
+
+def extract_layers(
+    cond: ConditioningInput,
+    region: RegionInput | None = None,
+    arch: Arch | None = None,
+    reserve_canvas: bool = False,
+):
+    # Image 1 is the canvas when it is already a reference, or when an inpaint
+    # instruction will attach it before build_instructions runs.
+    start_index = 2 if cond.edit_reference or reserve_canvas else 1
+    start_index += sum(_occupies_reference_image(c.mode, arch) for c in cond.control)
     if region is None:
         return _extract_layers(cond.positive, start_index)
-    else:
-        start_index += sum(1 if c.mode.is_ip_adapter else 0 for c in region.control)
-        return _extract_layers(region.positive, start_index)
+    # Region controls are not rewritten into reference images.
+    start_index += sum(c.mode.is_ip_adapter for c in region.control)
+    return _extract_layers(region.positive, start_index)
 
 
 def replace_layers(prompt: str, layer_mapping: dict[str, int], replacement="Picture {}"):

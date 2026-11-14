@@ -1,5 +1,5 @@
 from ai_diffusion.backend.api import ConditioningInput, ControlInput, LoraInput
-from ai_diffusion.backend.resources import ControlMode
+from ai_diffusion.backend.resources import Arch, ControlMode
 from ai_diffusion.files import File, FileCollection
 from ai_diffusion.image import Bounds
 from ai_diffusion.model.jobs import JobParams
@@ -210,6 +210,12 @@ def test_extract_layers():
     modified_prompt = replace_layers(prompt.positive, layers, replacement="{}")
     assert modified_prompt == "1 2 1"
     assert layers == {"foo": 1, "bar": 2}
+
+    # Pose on an instruction model becomes reference image 1, so the layer is image 2.
+    prompt = ConditioningInput("<layer:Sky>")
+    prompt.control = [ControlInput(ControlMode.pose)]
+    assert extract_layers(prompt, arch=Arch.flux2_4b) == {"Sky": 2}
+    assert extract_layers(prompt, arch=Arch.sd15) == {"Sky": 1}
 
 
 def test_wildcards():

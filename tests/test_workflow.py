@@ -416,6 +416,105 @@ def test_prepare_prompt_instructions():
     assert result.conditioning.positive == expected_prompt
 
 
+def _prompt_style():
+    style = Style(Path("default.json"))
+    style.checkpoints = []
+    return style
+
+
+@pytest.mark.parametrize(
+    ("arch", "expected"),
+    [
+        (Arch.flux2_4b, "Match the pose in image 2.\n"),
+        (Arch.qwen2, "Match the pose in <image2>.\n"),
+    ],
+)
+def test_instruction_image_index_ignores_non_reference_controls(arch: Arch, expected: str):
+    # soft_edge is not sent as a reference image, so it must not consume an image number.
+    # With the canvas as image 1, the pose reference is image 2.
+    cond = ConditioningInput("base prompt")
+    cond.edit_reference = True
+    cond.control = [
+        ControlInput(ControlMode.soft_edge, Image.create(Extent(4, 4))),
+        ControlInput(ControlMode.pose, Image.create(Extent(4, 4))),
+    ]
+
+    result = workflow.prepare_prompts(cond, _prompt_style(), seed=1, arch=arch, files=files)
+    assert result.conditioning is not None
+    assert result.conditioning.positive.startswith(expected)
+
+
+def test_existing_reference_control_keeps_following_image_index():
+    cond = ConditioningInput("base prompt")
+    cond.edit_reference = True
+    cond.control = [
+        ControlInput(ControlMode.reference, Image.create(Extent(4, 4))),
+        ControlInput(ControlMode.pose, Image.create(Extent(4, 4))),
+    ]
+
+    result = workflow.prepare_prompts(cond, _prompt_style(), 1, Arch.flux2_4b, files=files)
+    assert result.conditioning is not None
+    # canvas = 1, explicit reference = 2, pose = 3
+    assert result.conditioning.positive.startswith("Match the pose in image 3.\n")
+
+
+def test_layer_reference_numbers_follow_instruction_images():
+    cond = ConditioningInput("a <layer:Sky>")
+    cond.control = [ControlInput(ControlMode.pose, Image.create(Extent(4, 4)))]
+    layers = extract_layers(cond, arch=Arch.flux2_4b)
+    assert layers == {"Sky": 2}
+
+    cond.control.append(ControlInput(ControlMode.reference, Image.create(Extent(4, 4))))
+    result = workflow.prepare_prompts(
+        cond, _prompt_style(), 1, Arch.flux2_4b, None, layers, files=files
+    )
+    assert result.conditioning is not None
+    assert result.conditioning.positive == "Match the pose in image 1.\n\na image 2"
+
+
+def test_inpaint_instruction_reserves_canvas_reference_slot():
+    assert workflow.inpaint_reference_instruction(Arch.flux2_9b, InpaintMode.fill) == ""
+    assert workflow.inpaint_reference_instruction(Arch.flux2_9b, InpaintMode.expand).startswith(
+        "Expand"
+    )
+
+    cond = ConditioningInput("see <layer:Sky>")
+    cond.control = [ControlInput(ControlMode.pose, Image.create(Extent(4, 4)))]
+    reserve = bool(workflow.inpaint_reference_instruction(Arch.qwen2, InpaintMode.remove_object))
+    layers = extract_layers(cond, arch=Arch.qwen2, reserve_canvas=reserve)
+    assert layers == {"Sky": 3}
+
+    cond.control.append(ControlInput(ControlMode.reference, Image.create(Extent(4, 4))))
+    result = workflow.prepare_prompts(
+        cond, _prompt_style(), 1, Arch.qwen2, InpaintMode.remove_object, layers, files=files
+    )
+    assert result.conditioning is not None
+    assert result.conditioning.edit_reference is True
+    assert result.conditioning.positive == (
+        "Remove the object.\nMatch the pose in <image2>.\n\nsee <image3>"
+    )
+
+
+def test_sdxl_pose_does_not_consume_reference_index():
+    cond = ConditioningInput("a <layer:Sky>")
+    cond.control = [ControlInput(ControlMode.pose, Image.create(Extent(4, 4)))]
+    assert extract_layers(cond, arch=Arch.sdxl) == {"Sky": 1}
+
+
+@pytest.mark.parametrize("arch", [Arch.flux2_4b, Arch.qwen2])
+def test_substitutable_controls_are_numbered_as_reference_images(arch: Arch):
+    token = "<image1>" if arch is Arch.qwen2 else "image 1"
+    for mode in ControlMode:
+        if not mode.can_substitute_instruction(arch):
+            continue
+        cond = ConditioningInput("prompt")
+        cond.control = [ControlInput(mode, Image.create(Extent(4, 4)))]
+        result = workflow.prepare_prompts(cond, _prompt_style(), 1, arch, files=files)
+        assert result.conditioning is not None
+        assert token in result.conditioning.positive
+        assert result.conditioning.control[0].mode is ControlMode.reference
+
+
 @pytest.mark.parametrize("arch", [Arch.sdxl, Arch.flux2_4b, Arch.flux2_9b])
 def test_prepare_prompt_inpaint(arch):
     files = FileLibrary(FileCollection(), FileCollection())
