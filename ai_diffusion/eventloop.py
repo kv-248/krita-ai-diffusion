@@ -1,10 +1,14 @@
 import asyncio
 from collections.abc import Callable
+from typing import Any
 
 from PyQt6.QtCore import QTimer
 
 _loop = asyncio.new_event_loop()
 _timer = QTimer()
+# asyncio keeps only a weak reference to tasks. Fire-and-forget callers drop the
+# returned task, so retain it until it finishes or a collection will destroy it.
+_tasks: set[asyncio.Task[Any]] = set()
 
 
 def process_python_events():
@@ -34,6 +38,8 @@ def run(future):
     else:
         task = _loop.create_task(future)
     assert task, "Task was not scheduled"
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
     return task
 
 
